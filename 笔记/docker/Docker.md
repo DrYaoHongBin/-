@@ -200,7 +200,7 @@ cp        Copy files/folders from the containers filesystem to the host path   #
 create    Create a new container                        # 创建一个新的容器，同 run，但不启动容器
 diff      Inspect changes on a container's filesystem   # 查看 docker 容器变化
 events    Get real time events from the server          # 从 docker 服务获取容器实时事件
-exec      Run a command in an existing container        # 在已存在的容器上运行命令
+**exec**      Run a command in an existing container        # 在已存在的容器上运行命令
 export    Stream the contents of a container as a tar archive   # 导出容器的内容流作为一个 tar 归档文件[对应 import ]
 history   Show the history of an image                  # 展示一个镜像形成历史
 images    List images                                   # 列出系统当前镜像
@@ -232,4 +232,162 @@ version   Show the docker version information           # 查看 docker 版本�
 wait      Block until a container stops, then print its exit code   # 截取容器停止时的退出状态值
 
 # Docker镜像
+
+## 镜像原理
+
+### 联合文件系统
+
+UnionFS（联合文件系统）：Union文件系统（UnionFS）是一种分层、轻量级并且高性能的文件系统，它支持对文件系统的修改作为一次提交来一层层的叠加，同时可以将不同目录挂载到同一个虚拟文件系统下(unite several directories into a single virtual filesystem)。Union 文件系统是 Docker 镜像的基础。镜像可以通过分层来进行继承，基于基础镜像（没有父镜像），可以制作各种具体的应用镜像。
+
+特性：一次同时加载多个文件系统，但从外面看起来，只能看到一个文件系统，联合加载会把各层文件系统叠加起来，这样最终的文件系统会包含所有底层的文件和目录
+
+###  镜像加载原理
+
+docker的镜像实际上由一层一层的文件系统组成，这种层级的文件系统叫UnionFS。
+
+bootfs(boot file system)主要包含bootloader和kernel, bootloader主要是引导加载kernel, Linux刚启动时会加载bootfs文件系统，在Docker镜像的最底层是bootfs。这一层与我们典型的Linux/Unix系统是一样的，包含boot加载器和内核。当boot加载完成之后整个内核就都在内存中了，此时内存的使用权已由bootfs转交给内核，此时系统也会卸载bootfs。 
+
+rootfs (root file system) ，在bootfs之上。包含的就是典型 Linux 系统中的 /dev, /proc, /bin, /etc 等标准目录和文件。rootfs就是各种不同的操作系统发行版，比如Ubuntu，Centos等等。
+
+![](docker/18.png)
+
+对于一个精简的OS，rootfs可以很小，只需要包括最基本的命令、工具和程序库就可以了，因为底层直接用Host的kernel，自己只需要提供 rootfs 就行了。由此可见对于不同的linux发行版, bootfs基本是一致的, rootfs会有差别, 因此不同的发行版可以公用bootfs。
+
+### 为什么Docker镜像要采用分层的结构
+
+最大的一个好处就是 - 共享资源
+
+比如：有多个镜像都从相同的 base 镜像构建而来，那么宿主机只需在磁盘上保存一份base镜像，
+
+同时内存中也只需加载一份 base 镜像，就可以为所有容器服务了。而且镜像的每一层都可以被共享。
+
+### 镜像的特点
+
+Docker镜像都说只读的，当容器启动时，一个新的可写层被加载到镜像的顶部，这一层被称为容器层，容器层之下叫镜像层。
+
+# Docker容器数据卷
+
+## 容器数据卷是什么
+
+先来看看Docker的理念：
+
+\*  将运用与运行的环境打包形成容器运行 ，运行可以伴随着容器，但是我们对数据的要求希望是持久化的
+
+\*  容器之间希望有可能共享数据 
+
+Docker容器产生的数据，如果不通过docker commit生成新的镜像，使得数据做为镜像的一部分保存下来，
+
+那么当容器删除后，数据自然也就没有了。
+
+为了能保存数据在docker中我们使用卷。
+
+## 能用来干嘛
+
+可以实现容器的持久化和容器间的**继承**+共享数据
+
+卷就是目录或文件，存在于一个或多个容器中，由docker挂载到容器，但不属于联合文件系统，因此能够绕过Union File System提供一些用于持续存储或共享数据的特性：
+
+ 卷的设计目的就是数据的持久化，完全独立于容器的生存周期，因此Docker不会在容器删除时删除其挂载的数据卷
+
+特点：
+
+1：数据卷可在容器之间共享或重用数据
+
+2：卷中的更改可以直接生效
+
+3：数据卷中的更改不会包含在镜像的更新中
+
+4：数据卷的生命周期一直持续到没有容器使用它为止
+
+## 添加方式
+
+### 1. 直接命令添加
+
+docker run -it -v /宿主机目录:/容器内目录 centos /bin/bash，目录不存在的话会自动生成，容器停止后重新启动后会同步停止期间产生的数据变化，还可以设置容器目录内的权限，比如设置只读，则容器访问这个目录只能读取，宿主机在这个目录可以正常读写。
+
+### 2. DockerFile添加
+
+**说明**：
+
+VOLUME["/dataVolumeContainer","/dataVolumeContainer2","/dataVolumeContainer3"]
+
+出于可移植和分享的考虑，用-v 主机目录:容器目录这种方法不能够直接在Dockerfile中实现。
+
+由于宿主机目录是依赖于特定宿主机的，并不能够保证在所有的宿主机上都存在这样的特定目录。
+
+
+
+1. 新建一个文件dockerfile2，在文件中写入以下命令
+
+\# volume test
+
+FROM centos
+
+VOLUME ["/dataVolumeContainer1","/dataVolumeContainer2"]
+
+CMD echo "finished,--------success1"
+
+CMD /bin/bash
+
+2. bulid之后生成一个新镜像new/centos
+
+docker build -f dockerfile2 -t new/centos
+
+3. 利用新镜像生成容器
+
+docker run -it new/centos /bin/bash 
+
+4. 通过docker inspect 容器号查看数据卷对应的宿主目录（最新版的centos是在返回的json数据中的mount字段查看）
+
+5. 如果Docker挂载主机目录Docker访问出现cannot open directory .: Permission denied
+
+解决办法：在挂载目录后多加一个--privileged=true参数即可
+
+# 数据卷容器
+
+## 什么是数据卷容器
+
+父容器挂载数据卷，其它容器通过挂载这个(父容器)实现数据共享，挂载数据卷的容器，称之为数据卷容器。
+
+父容器dc1在宿主机挂载两个数据卷，dc2和dc3数据卷继承dc1，即使dc1删了，dc2和dc3之间也可以数据共享，数据卷的生命周期一直持续到没有容器使用它为止。
+
+# DockerFile
+
+## 什么是DockerFile
+
+DockerFile是用来构建Docker镜像的构建文件，是有一系列命令和参数构成的脚本。
+
+## DockerFile构建的步骤
+
+编写DockerFile文件，使用build命令构建新镜像，使用run命令生成容器。
+
+## DockerFile构建过程解析
+
+### Dockerfile内容基础知识
+
+![](docker/19.png)
+
+### Docker执行Dockerfile的大致流程
+
+![](docker/20.png)
+
+### 为什么要用Dockerfile
+
+从应用软件的角度来看，Dockerfile、Docker镜像与Docker容器分别代表软件的三个不同阶段，
+
+\*  Dockerfile是软件的原材料
+
+\*  Docker镜像是软件的交付品
+
+\*  Docker容器则可以认为是软件的运行态。
+
+Dockerfile面向开发，Docker镜像成为交付标准，Docker容器则涉及部署与运维，三者缺一不可，合力充当Docker体系的基石。
+
+1 Dockerfile，需要定义一个Dockerfile，Dockerfile定义了进程需要的一切东西。Dockerfile涉及的内容包括执行代码或者是文件、环境变量、依赖包、运行时环境、动态链接库、操作系统的发行版、服务进程和内核进程(当应用进程需要和系统服务和内核进程打交道，这时需要考虑如何设计namespace的权限控制)等等; 
+
+2 Docker镜像，在用Dockerfile定义一个文件之后，docker build时会产生一个Docker镜像，当运行 Docker镜像时，会真正开始提供服务;
+
+3 Docker容器，容器是直接提供服务的。
+
+
 
